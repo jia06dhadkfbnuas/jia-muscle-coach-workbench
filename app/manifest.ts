@@ -1,5 +1,7 @@
 import type { MetadataRoute } from "next";
 
+export const dynamic = "force-static";
+
 export default function manifest(): MetadataRoute.Manifest {
   const startUrl = process.env.GITHUB_ACTIONS === "true" ? "/jia-muscle-coach-workbench/" : "/";
   return {
@@ -12,3 +14,4 @@ export default function manifest(): MetadataRoute.Manifest {
     theme_color: "#17324d",
   };
 }
+
