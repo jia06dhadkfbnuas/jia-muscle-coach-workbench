@@ -126,7 +126,7 @@ export default function Home() {
         if (!Number.isFinite(hours) || hours <= 0 || !Number.isFinite(started.getTime()) || value.includes("清醒") || value.includes("卧床")) continue;
         const night = new Date(started);
         if (night.getHours() < 12) night.setDate(night.getDate() - 1);
-        const key = night.toISOString().slice(0, 10);
+        const key = `${night.getFullYear()}-${String(night.getMonth() + 1).padStart(2, "0")}-${String(night.getDate()).padStart(2, "0")}`;
         sleepByNight.set(key, (sleepByNight.get(key) || 0) + hours);
       }
       const latestSleep = [...sleepByNight.entries()].sort(([a], [b]) => b.localeCompare(a))[0]?.[1];
@@ -212,3 +212,4 @@ export default function Home() {
 function NumberField({label,unit,value,min,max,step=1,onChange}:{label:string;unit:string;value:number;min:number;max:number;step?:number;onChange:(value:number)=>void}) {
   return <label className="field"><span>{label}<small>{unit}</small></span><input type="number" value={value} min={min} max={max} step={step} onChange={e=>onChange(Number(e.target.value))}/></label>;
 }
+
