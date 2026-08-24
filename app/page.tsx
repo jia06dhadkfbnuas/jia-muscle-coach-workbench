@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 
 type View = "today" | "plans" | "recovery" | "progress";
 type Exercise = { name: string; muscle: string; sets: number; volume: number; unit?: string; paused?: boolean; note?: string };
 type Template = { id: string; name: string; accent: string; exercises: Exercise[] };
 type SetLog = { id: string; day: number; templateId: string; exercise: string; weight: number; reps: number; rir: number; createdAt: string };
 type Recovery = { day: number; sleep: number; restingHr: number; hrv: number; workoutDuration: number; avgHr: number; fatigue: number; soreness: number; stress: number; pain: string };
+type HealthMetric = { name?: string; data?: Array<{ qty?: number; date?: string; start?: string; startDate?: string; value?: string }> };
+type HealthExport = { data?: { metrics?: HealthMetric[]; workouts?: Array<{ name?: string; start?: string; end?: string; duration?: number; avgHeartRate?: { qty?: number } }> } };
 
 const templates: Template[] = [
   { id: "shoulder", name: "肩", accent: "青绿", exercises: [
@@ -107,6 +109,44 @@ export default function Home() {
     await navigator.clipboard.writeText(template); setSaved(true); window.setTimeout(()=>setSaved(false),1600);
   }
 
+  async function importHealthExport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text()) as HealthExport;
+      const metrics = payload.data?.metrics || [];
+      const metric = (name: string) => metrics.find((item) => item.name === name)?.data || [];
+      const sortByDate = <T extends { date?: string; start?: string; startDate?: string }>(items: T[]) => [...items].sort((a, b) => new Date(b.date || b.start || b.startDate || 0).getTime() - new Date(a.date || a.start || a.startDate || 0).getTime());
+      const latestValue = (name: string) => Number(sortByDate(metric(name))[0]?.qty);
+      const sleepByNight = new Map<string, number>();
+      for (const sample of metric("sleep_analysis")) {
+        const value = sample.value || "";
+        const hours = Number(sample.qty);
+        const started = new Date(sample.start || sample.startDate || sample.date || 0);
+        if (!Number.isFinite(hours) || hours <= 0 || !Number.isFinite(started.getTime()) || value.includes("清醒") || value.includes("卧床")) continue;
+        const night = new Date(started);
+        if (night.getHours() < 12) night.setDate(night.getDate() - 1);
+        const key = night.toISOString().slice(0, 10);
+        sleepByNight.set(key, (sleepByNight.get(key) || 0) + hours);
+      }
+      const latestSleep = [...sleepByNight.entries()].sort(([a], [b]) => b.localeCompare(a))[0]?.[1];
+      const latestWorkout = [...(payload.data?.workouts || [])].sort((a, b) => new Date(b.end || b.start || 0).getTime() - new Date(a.end || a.start || 0).getTime())[0];
+      setRecovery((current) => ({
+        ...current,
+        sleep: Number.isFinite(latestSleep) ? Number(latestSleep.toFixed(1)) : current.sleep,
+        restingHr: Number.isFinite(latestValue("resting_heart_rate")) ? Math.round(latestValue("resting_heart_rate")) : current.restingHr,
+        hrv: Number.isFinite(latestValue("heart_rate_variability")) ? Number(latestValue("heart_rate_variability").toFixed(1)) : current.hrv,
+        workoutDuration: Number.isFinite(latestWorkout?.duration) ? Math.round((latestWorkout?.duration || 0) / 60) : current.workoutDuration,
+        avgHr: Number.isFinite(latestWorkout?.avgHeartRate?.qty) ? Math.round(latestWorkout?.avgHeartRate?.qty || 0) : current.avgHr,
+      }));
+      setLastHealthImport(new Date().toISOString()); setSaved(true); window.setTimeout(() => setSaved(false), 1800);
+    } catch {
+      window.alert("无法读取该文件。请选择 Health Auto Export 导出的 JSON 文件。");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   return (
     <main className="shell">
       <aside className="rail">
@@ -149,7 +189,7 @@ export default function Home() {
 
         {view === "plans" && <section className="contentPanel"><div className="sectionIntro"><div><p className="label">计划库</p><h2>按你的训记模板原样录入</h2></div><p>容量是历史汇总，不是目标重量；目标次数和 RIR 由实际记录决定。</p></div><div className="templateGrid">{templates.map(template=>{const available=template.exercises.filter(e=>!e.paused).reduce((s,e)=>s+e.sets,0);return <article className="templateCard" key={template.id}><div className="templateTop"><span className={`templateBadge ${template.id}`}>{template.name.slice(0,1)}</span><div><h3>{template.name}</h3><p>{available} 个可执行组 · {template.exercises.filter(e=>!e.paused).length} 个动作</p></div></div><ol>{template.exercises.map(e=><li className={e.paused?"mutedRow":""} key={e.name}><span>{e.name}{e.paused&&"（暂停）"}</span><b>{e.sets}组</b></li>)}</ol><button onClick={()=>{setTemplateId(template.id);setView("today")}}>选择这个模板</button></article>})}</div></section>}
 
-        {view === "recovery" && <section className="contentPanel narrow"><div className="sectionIntro"><div><p className="label">DAY {day}</p><h2>只记录影响训练的恢复字段</h2></div></div><article className="healthBridge"><div><p className="label">APPLE HEALTH BRIDGE</p><h3>{lastHealthImport ? "已收到快捷指令数据" : "等待首次快捷指令导入"}</h3><p>{lastHealthImport ? `最近导入：${new Date(lastHealthImport).toLocaleString("zh-CN")}` : "无需 Mac。快捷指令读取获准字段后，通过专用网址回到工作台；数据只写入当前浏览器。"}</p></div><button type="button" onClick={copyBridgeTemplate}>复制回传网址模板</button></article><form className="recoveryForm" onSubmit={(e)=>{e.preventDefault();setSaved(true);setTimeout(()=>setSaved(false),1400)}}>
+        {view === "recovery" && <section className="contentPanel narrow"><div className="sectionIntro"><div><p className="label">DAY {day}</p><h2>只记录影响训练的恢复字段</h2></div></div><article className="healthBridge"><div><p className="label">APPLE HEALTH BRIDGE</p><h3>{lastHealthImport ? "已收到健康数据" : "等待首次健康数据导入"}</h3><p>{lastHealthImport ? `最近导入：${new Date(lastHealthImport).toLocaleString("zh-CN")}` : "导入 Health Auto Export 的 JSON 后，睡眠、静息心率、HRV 与最近一次训练自动写入本机浏览器。"}</p></div><div className="bridgeActions"><label className="importButton">导入 Health JSON<input type="file" accept="application/json,.json" onChange={importHealthExport}/></label><button type="button" onClick={copyBridgeTemplate}>复制快捷指令网址</button></div></article><form className="recoveryForm" onSubmit={(e)=>{e.preventDefault();setSaved(true);setTimeout(()=>setSaved(false),1400)}}>
           <NumberField label="睡眠" unit="小时" value={recovery.sleep} min={0} max={15} step={0.1} onChange={v=>setRecovery({...recovery,day,sleep:v})}/>
           <NumberField label="静息心率" unit="bpm" value={recovery.restingHr} min={30} max={220} onChange={v=>setRecovery({...recovery,day,restingHr:v})}/>
           <NumberField label="HRV SDNN" unit="ms" value={recovery.hrv} min={0} max={300} onChange={v=>setRecovery({...recovery,day,hrv:v})}/>
