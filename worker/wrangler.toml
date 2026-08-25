@@ -5,4 +5,4 @@ compatibility_date = "2026-08-25"
 [[d1_databases]]
 binding = "DB"
 database_name = "jia-muscle-coach"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "072cabf1-53ca-4019-b1a0-2dfe2bb94ace"
