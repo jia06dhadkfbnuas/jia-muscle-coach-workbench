@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, useEffect, useState } from "react";
+import "./sync.css";
 
 type View = "today" | "plans" | "recovery" | "progress";
 type Exercise = { name: string; muscle: string; sets: number; volume: number; unit?: string; paused?: boolean; note?: string };
@@ -11,6 +12,8 @@ type Recovery = { day: number; sleep: number; restingHr: number; hrv: number; wo
 type HealthMetric = { name?: string; data?: Array<{ qty?: number; date?: string; start?: string; startDate?: string; value?: string }> };
 type HealthExport = { data?: { metrics?: HealthMetric[]; workouts?: Array<{ name?: string; start?: string; end?: string; duration?: number; avgHeartRate?: { qty?: number } }> } };
 type TrainingImport = { type: "muscle-coach-training-import"; day: number; templateId: string; logs: Array<Omit<SetLog, "id" | "day" | "templateId">> };
+type SyncConfig = { endpoint: string; readToken: string };
+type RemoteRecovery = { snapshot?: { sleepHours?: number | null; restingHr?: number | null; hrvSdnn?: number | null; workoutDurationMin?: number | null; avgHr?: number | null; syncedAt?: string } };
 
 const templates: Template[] = [
   { id: "shoulder", name: "肩", accent: "青绿", exercises: [
@@ -48,6 +51,8 @@ export default function Home() {
   const [logs, setLogs] = useState<SetLog[]>([]);
   const [recovery, setRecovery] = useState<Recovery>(initialRecovery);
   const [lastHealthImport, setLastHealthImport] = useState("");
+  const [syncConfig, setSyncConfig] = useState<SyncConfig>({ endpoint:"", readToken:"" });
+  const [syncing, setSyncing] = useState(false);
   const [saved, setSaved] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
@@ -59,7 +64,7 @@ export default function Home() {
       let nextRecovery = initialRecovery;
       if (stored) {
         const parsed = JSON.parse(stored);
-        setLogs(parsed.logs || []); nextRecovery = { ...initialRecovery, ...(parsed.recovery || {}) }; setDay(parsed.day || 1); setTemplateId(parsed.templateId || "shoulder"); setLastHealthImport(parsed.lastHealthImport || "");
+        setLogs(parsed.logs || []); nextRecovery = { ...initialRecovery, ...(parsed.recovery || {}) }; setDay(parsed.day || 1); setTemplateId(parsed.templateId || "shoulder"); setLastHealthImport(parsed.lastHealthImport || ""); setSyncConfig(parsed.syncConfig || { endpoint:"", readToken:"" });
       }
       const fragment = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
       const params = new URLSearchParams(fragment || window.location.search);
@@ -76,8 +81,8 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem("muscle-coach-workbench-v1", JSON.stringify({ logs, recovery, day, templateId, lastHealthImport }));
-  }, [logs, recovery, day, templateId, lastHealthImport, hydrated]);
+    localStorage.setItem("muscle-coach-workbench-v1", JSON.stringify({ logs, recovery, day, templateId, lastHealthImport, syncConfig }));
+  }, [logs, recovery, day, templateId, lastHealthImport, syncConfig, hydrated]);
 
   const selected = templates.find((item) => item.id === templateId) || templates[0];
   const activeExercises = selected.exercises.filter((item) => !item.paused);
@@ -170,6 +175,32 @@ export default function Home() {
     }
   }
 
+  async function syncRecovery() {
+    const endpoint = syncConfig.endpoint.replace(/\/$/, "");
+    if (!endpoint || !syncConfig.readToken) { window.alert("请先填入私有同步地址和只读密钥。"); return; }
+    setSyncing(true);
+    try {
+      const response = await fetch(`${endpoint}/v1/recovery/latest`, { headers: { Authorization: `Bearer ${syncConfig.readToken}` } });
+      if (!response.ok) throw new Error("sync failed");
+      const payload = await response.json() as RemoteRecovery;
+      const snapshot = payload.snapshot;
+      if (!snapshot) throw new Error("empty sync");
+      setRecovery((current) => ({
+        ...current,
+        sleep: Number.isFinite(snapshot.sleepHours) ? Number(snapshot.sleepHours) : current.sleep,
+        restingHr: Number.isFinite(snapshot.restingHr) ? Math.round(snapshot.restingHr as number) : current.restingHr,
+        hrv: Number.isFinite(snapshot.hrvSdnn) ? Number(snapshot.hrvSdnn) : current.hrv,
+        workoutDuration: Number.isFinite(snapshot.workoutDurationMin) ? Math.round(snapshot.workoutDurationMin as number) : current.workoutDuration,
+        avgHr: Number.isFinite(snapshot.avgHr) ? Math.round(snapshot.avgHr as number) : current.avgHr,
+      }));
+      setLastHealthImport(snapshot.syncedAt || new Date().toISOString()); setSaved(true); window.setTimeout(() => setSaved(false), 1800);
+    } catch {
+      window.alert("无法同步。请检查同步地址、只读密钥和 iPhone 自动化是否已运行。");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   return (
     <main className="shell">
       <aside className="rail">
@@ -207,7 +238,7 @@ export default function Home() {
 
         {view === "plans" && <section className="contentPanel"><div className="sectionIntro"><div><p className="label">计划库</p><h2>按你的训记模板原样录入</h2></div><p>容量是历史汇总，不是目标重量；目标次数和 RIR 由实际记录决定。</p></div><div className="templateGrid">{templates.map(template=>{const available=template.exercises.filter(e=>!e.paused).reduce((s,e)=>s+e.sets,0);return <article className="templateCard" key={template.id}><div className="templateTop"><span className={`templateBadge ${template.id}`}>{template.name.slice(0,1)}</span><div><h3>{template.name}</h3><p>{available} 个可执行组 · {template.exercises.filter(e=>!e.paused).length} 个动作</p></div></div><ol>{template.exercises.map(e=><li className={e.paused?"mutedRow":""} key={e.name}><span>{e.name}{e.paused&&"（暂停）"}</span><b>{e.sets}组</b></li>)}</ol><button onClick={()=>{setTemplateId(template.id);setView("today")}}>选择这个模板</button></article>})}</div></section>}
 
-        {view === "recovery" && <section className="contentPanel narrow"><div className="sectionIntro"><div><p className="label">DAY {day}</p><h2>只记录影响训练的恢复字段</h2></div></div><article className="healthBridge"><div><p className="label">APPLE HEALTH BRIDGE</p><h3>{lastHealthImport ? "已收到健康数据" : "等待首次健康数据导入"}</h3><p>{lastHealthImport ? `最近导入：${new Date(lastHealthImport).toLocaleString("zh-CN")}` : "导入 Health Auto Export 的 JSON 后，睡眠、静息心率、HRV 与最近一次训练自动写入本机浏览器。"}</p></div><div className="bridgeActions"><label className="importButton">导入 Health JSON<input type="file" accept="application/json,.json" onChange={importHealthExport}/></label><button type="button" onClick={copyBridgeTemplate}>复制快捷指令网址</button></div></article><form className="recoveryForm" onSubmit={(e)=>{e.preventDefault();setSaved(true);setTimeout(()=>setSaved(false),1400)}}>
+        {view === "recovery" && <section className="contentPanel narrow"><div className="sectionIntro"><div><p className="label">DAY {day}</p><h2>只记录影响训练的恢复字段</h2></div></div><article className="healthBridge"><div><p className="label">APPLE HEALTH BRIDGE</p><h3>{lastHealthImport ? "已收到健康数据" : "等待首次健康数据导入"}</h3><p>{lastHealthImport ? `最近导入：${new Date(lastHealthImport).toLocaleString("zh-CN")}` : "连接私有同步后，睡眠、静息心率、HRV 与最近一次训练会自动写入本机浏览器。"}</p></div><div className="bridgeActions"><button type="button" onClick={syncRecovery} disabled={syncing}>{syncing ? "正在同步..." : "立即同步 Health"}</button><label className="importButton">导入 Health JSON<input type="file" accept="application/json,.json" onChange={importHealthExport}/></label><button type="button" onClick={copyBridgeTemplate}>复制快捷指令网址</button></div></article><details className="syncSetup"><summary>设置私有自动同步</summary><p>仅首次填写。密钥只保存于当前浏览器，不会提交到 GitHub。</p><label>同步地址<input value={syncConfig.endpoint} placeholder="https://你的-worker.workers.dev" onChange={(event)=>setSyncConfig({ ...syncConfig, endpoint:event.target.value })}/></label><label>只读密钥<input type="password" value={syncConfig.readToken} placeholder="由私有同步服务生成" onChange={(event)=>setSyncConfig({ ...syncConfig, readToken:event.target.value })}/></label></details><form className="recoveryForm" onSubmit={(e)=>{e.preventDefault();setSaved(true);setTimeout(()=>setSaved(false),1400)}}>
           <NumberField label="睡眠" unit="小时" value={recovery.sleep} min={0} max={15} step={0.1} onChange={v=>setRecovery({...recovery,day,sleep:v})}/>
           <NumberField label="静息心率" unit="bpm" value={recovery.restingHr} min={30} max={220} onChange={v=>setRecovery({...recovery,day,restingHr:v})}/>
           <NumberField label="HRV SDNN" unit="ms" value={recovery.hrv} min={0} max={300} onChange={v=>setRecovery({...recovery,day,hrv:v})}/>
@@ -241,4 +272,3 @@ function SetForm({ exercise, onSubmit }: { exercise: string; onSubmit: (exercise
     <button type="submit">记录一组</button>
   </form>;
 }
-
