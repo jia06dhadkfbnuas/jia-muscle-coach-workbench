@@ -5,7 +5,8 @@ import { ChangeEvent, useEffect, useState } from "react";
 type View = "today" | "plans" | "recovery" | "progress";
 type Exercise = { name: string; muscle: string; sets: number; volume: number; unit?: string; paused?: boolean; note?: string };
 type Template = { id: string; name: string; accent: string; exercises: Exercise[] };
-type SetLog = { id: string; day: number; templateId: string; exercise: string; weight: number; reps: number; rir: number; createdAt: string };
+type LoadMode = "total" | "sides";
+type SetLog = { id: string; day: number; templateId: string; exercise: string; weight: number; loadMode?: LoadMode; leftWeight?: number; rightWeight?: number; reps: number; rir: number; createdAt: string };
 type Recovery = { day: number; sleep: number; restingHr: number; hrv: number; workoutDuration: number; avgHr: number; fatigue: number; soreness: number; stress: number; pain: string };
 type HealthMetric = { name?: string; data?: Array<{ qty?: number; date?: string; start?: string; startDate?: string; value?: string }> };
 type HealthExport = { data?: { metrics?: HealthMetric[]; workouts?: Array<{ name?: string; start?: string; end?: string; duration?: number; avgHeartRate?: { qty?: number } }> } };
@@ -82,7 +83,8 @@ export default function Home() {
   const plannedSets = activeExercises.reduce((sum, item) => sum + item.sets, 0);
   const todayLogs = logs.filter((item) => item.day === day && item.templateId === templateId);
   const completion = plannedSets ? Math.min(100, Math.round(todayLogs.length / plannedSets * 100)) : 0;
-  const totalVolume = logs.reduce((sum, item) => sum + item.weight * item.reps, 0);
+  const loggedLoad = (item: SetLog) => item.loadMode === "sides" ? (item.leftWeight || 0) + (item.rightWeight || 0) : item.weight;
+  const totalVolume = logs.reduce((sum, item) => sum + loggedLoad(item) * item.reps, 0);
   const coach = recovery.pain !== "无"
     ? { tone:"danger", title:"先暂停相关训练", text:"你记录了疼痛。不要用 HRV 覆盖疼痛信号；请停止诱发动作并说明部位与性质。" }
     : recovery.sleep < 6 || recovery.fatigue >= 8
@@ -91,9 +93,13 @@ export default function Home() {
 
   function addSet(exercise: string, form: HTMLFormElement) {
     const data = new FormData(form);
-    const weight = Number(data.get("weight")); const reps = Number(data.get("reps")); const rir = Number(data.get("rir"));
-    if (!Number.isFinite(weight) || weight < 0 || !Number.isFinite(reps) || reps < 1 || !Number.isFinite(rir) || rir < 0 || rir > 5) return;
-    setLogs((current) => [...current, { id:crypto.randomUUID(), day, templateId, exercise, weight, reps, rir, createdAt:new Date().toISOString() }]);
+    const loadMode = data.get("loadMode") as LoadMode;
+    const weight = Number(data.get("weight")); const leftWeight = Number(data.get("leftWeight")); const rightWeight = Number(data.get("rightWeight")); const reps = Number(data.get("reps")); const rir = Number(data.get("rir"));
+    const validLoad = loadMode === "sides"
+      ? Number.isFinite(leftWeight) && leftWeight >= 0 && Number.isFinite(rightWeight) && rightWeight >= 0
+      : Number.isFinite(weight) && weight >= 0;
+    if (!validLoad || !Number.isFinite(reps) || reps < 1 || !Number.isFinite(rir) || rir < 0 || rir > 5) return;
+    setLogs((current) => [...current, { id:crypto.randomUUID(), day, templateId, exercise, weight: loadMode === "sides" ? leftWeight + rightWeight : weight, loadMode, leftWeight: loadMode === "sides" ? leftWeight : undefined, rightWeight: loadMode === "sides" ? rightWeight : undefined, reps, rir, createdAt:new Date().toISOString() }]);
     form.reset(); setSaved(true); window.setTimeout(() => setSaved(false), 1400);
   }
 
@@ -170,12 +176,7 @@ export default function Home() {
                 return <article className={`exerciseCard ${exercise.paused?"paused":""}`} key={exercise.name}>
                   <div className="exerciseHead"><span className="index">{String(index+1).padStart(2,"0")}</span><div><strong>{exercise.name}</strong><small>{exercise.muscle} · {exercise.sets}组 · 截图{exercise.unit || "容量"} {exercise.volume}</small></div><span className="setCount">{exercise.paused?"暂停":`${done}/${exercise.sets}`}</span></div>
                   {exercise.note && <p className="exerciseNote">{exercise.note}</p>}
-                  {!exercise.paused && <form className="setForm" onSubmit={(event)=>{event.preventDefault();addSet(exercise.name,event.currentTarget)}}>
-                    <label>重量 kg<input name="weight" type="number" min="0" step="0.5" placeholder="0" required /></label>
-                    <label>次数<input name="reps" type="number" min="1" max="100" placeholder="10" required /></label>
-                    <label>RIR<input name="rir" type="number" min="0" max="5" placeholder="2" required /></label>
-                    <button type="submit">记录一组</button>
-                  </form>}
+                  {!exercise.paused && <SetForm exercise={exercise.name} onSubmit={addSet} />}
                 </article>;
               })}</div>
             </article>
@@ -202,7 +203,7 @@ export default function Home() {
           <button className="primary wide" type="submit">保存恢复打卡</button>
         </form><div className={`inlineCoach ${coach.tone}`}><strong>{coach.title}</strong><p>{coach.text}</p></div></section>}
 
-        {view === "progress" && <section className="contentPanel"><div className="summaryCards"><article><span>已记录工作组</span><strong>{logs.length}</strong></article><article><span>累计训练容量</span><strong>{totalVolume.toFixed(0)}</strong><small>kg·次</small></article><article><span>当前提交天数</span><strong>{new Set(logs.map(l=>l.day)).size}</strong><small>/ 14</small></article></div><div className="timeline"><div className="sectionIntro"><div><p className="label">14 DAYS</p><h2>训练记录分布</h2></div></div><div className="dayGrid">{Array.from({length:14},(_,i)=>{const count=logs.filter(l=>l.day===i+1).length;return <button key={i+1} className={count?"logged":""} onClick={()=>{setDay(i+1);setView("today")}}><span>D{i+1}</span><strong>{count}</strong><small>组</small></button>})}</div></div><div className="logTable"><div className="sectionIntro"><div><p className="label">最近记录</p><h2>逐组明细</h2></div></div>{logs.length===0?<p className="empty">完成第一组后，这里会自动出现重量、次数和 RIR。</p>:<div className="tableWrap"><table><thead><tr><th>Day</th><th>模板</th><th>动作</th><th>重量</th><th>次数</th><th>RIR</th><th></th></tr></thead><tbody>{[...logs].reverse().slice(0,20).map(log=><tr key={log.id}><td>{log.day}</td><td>{templates.find(t=>t.id===log.templateId)?.name}</td><td>{log.exercise}</td><td>{log.weight} kg</td><td>{log.reps}</td><td>{log.rir}</td><td><button className="delete" onClick={()=>setLogs(current=>current.filter(item=>item.id!==log.id))}>删除</button></td></tr>)}</tbody></table></div>}</div></section>}
+        {view === "progress" && <section className="contentPanel"><div className="summaryCards"><article><span>已记录工作组</span><strong>{logs.length}</strong></article><article><span>累计训练容量</span><strong>{totalVolume.toFixed(0)}</strong><small>kg·次</small></article><article><span>当前提交天数</span><strong>{new Set(logs.map(l=>l.day)).size}</strong><small>/ 14</small></article></div><div className="timeline"><div className="sectionIntro"><div><p className="label">14 DAYS</p><h2>训练记录分布</h2></div></div><div className="dayGrid">{Array.from({length:14},(_,i)=>{const count=logs.filter(l=>l.day===i+1).length;return <button key={i+1} className={count?"logged":""} onClick={()=>{setDay(i+1);setView("today")}}><span>D{i+1}</span><strong>{count}</strong><small>组</small></button>})}</div></div><div className="logTable"><div className="sectionIntro"><div><p className="label">最近记录</p><h2>逐组明细</h2></div></div>{logs.length===0?<p className="empty">完成第一组后，这里会自动出现重量、次数和 RIR。</p>:<div className="tableWrap"><table><thead><tr><th>Day</th><th>模板</th><th>动作</th><th>重量</th><th>次数</th><th>RIR</th><th></th></tr></thead><tbody>{[...logs].reverse().slice(0,20).map(log=><tr key={log.id}><td>{log.day}</td><td>{templates.find(t=>t.id===log.templateId)?.name}</td><td>{log.exercise}</td><td>{log.loadMode === "sides" ? `左 ${log.leftWeight} / 右 ${log.rightWeight} kg` : `${log.weight} kg`}</td><td>{log.reps}</td><td>{log.rir}</td><td><button className="delete" onClick={()=>setLogs(current=>current.filter(item=>item.id!==log.id))}>删除</button></td></tr>)}</tbody></table></div>}</div></section>}
       </section>
       {saved && <div className="toast" role="status">已保存到本机</div>}
     </main>
@@ -211,5 +212,16 @@ export default function Home() {
 
 function NumberField({label,unit,value,min,max,step=1,onChange}:{label:string;unit:string;value:number;min:number;max:number;step?:number;onChange:(value:number)=>void}) {
   return <label className="field"><span>{label}<small>{unit}</small></span><input type="number" value={value} min={min} max={max} step={step} onChange={e=>onChange(Number(e.target.value))}/></label>;
+}
+
+function SetForm({ exercise, onSubmit }: { exercise: string; onSubmit: (exercise: string, form: HTMLFormElement) => void }) {
+  const [loadMode, setLoadMode] = useState<LoadMode>("sides");
+  return <form className="setForm" onSubmit={(event)=>{event.preventDefault(); onSubmit(exercise, event.currentTarget)}}>
+    <label className="loadMode">重量方式<select name="loadMode" value={loadMode} onChange={(event)=>setLoadMode(event.target.value as LoadMode)}><option value="sides">左右分别记录</option><option value="total">总重量</option></select></label>
+    {loadMode === "sides" ? <><label>左 kg<input name="leftWeight" type="number" min="0" step="0.5" placeholder="0" required /></label><label>右 kg<input name="rightWeight" type="number" min="0" step="0.5" placeholder="0" required /></label></> : <label>总重量 kg<input name="weight" type="number" min="0" step="0.5" placeholder="0" required /></label>}
+    <label>次数<input name="reps" type="number" min="1" max="100" placeholder="10" required /></label>
+    <label>RIR<input name="rir" type="number" min="0" max="5" placeholder="2" required /></label>
+    <button type="submit">记录一组</button>
+  </form>;
 }
 
