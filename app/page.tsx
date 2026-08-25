@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useState } from "react";
 import "./sync.css";
 
 type View = "today" | "plans" | "recovery" | "progress";
@@ -8,12 +8,12 @@ type Exercise = { name: string; muscle: string; sets: number; volume: number; un
 type Template = { id: string; name: string; accent: string; exercises: Exercise[] };
 type LoadMode = "total" | "sides";
 type SetLog = { id: string; day: number; templateId: string; exercise: string; weight: number; loadMode?: LoadMode; leftWeight?: number; rightWeight?: number; reps: number; rir?: number; createdAt: string };
-type Recovery = { day: number; sleep: number; restingHr: number; hrv: number; workoutDuration: number; avgHr: number; fatigue: number; soreness: number; stress: number; pain: string };
-type HealthMetric = { name?: string; data?: Array<{ qty?: number; date?: string; start?: string; startDate?: string; value?: string }> };
-type HealthExport = { data?: { metrics?: HealthMetric[]; workouts?: Array<{ name?: string; start?: string; end?: string; duration?: number; avgHeartRate?: { qty?: number } }> } };
+type Recovery = { day: number; sleep: number; sleepStart: string; sleepEnd: string; restingHr: number; hrv: number; steps: number; activeEnergy: number; exerciseMinutes: number; bodyWeight: number; workoutDuration: number; avgHr: number; maxHr: number; workoutEnergy: number; fatigue: number; soreness: number; stress: number; pain: string };
+type HealthMetric = { name?: string; data?: Array<{ qty?: number; date?: string; start?: string; startDate?: string; end?: string; value?: string }> };
+type HealthExport = { data?: { metrics?: HealthMetric[]; workouts?: Array<{ name?: string; start?: string; end?: string; duration?: number; avgHeartRate?: { qty?: number }; maxHeartRate?: { qty?: number }; activeEnergyBurned?: { qty?: number }; totalEnergyBurned?: { qty?: number } }> } };
 type TrainingImport = { type: "muscle-coach-training-import"; day: number; templateId: string; logs: Array<Omit<SetLog, "id" | "day" | "templateId">> };
 type SyncConfig = { endpoint: string; readToken: string };
-type RemoteRecovery = { snapshot?: { sleepHours?: number | null; restingHr?: number | null; hrvSdnn?: number | null; workoutDurationMin?: number | null; avgHr?: number | null; syncedAt?: string } };
+type RemoteRecovery = { snapshot?: { sleepHours?: number | null; sleepStart?: string | null; sleepEnd?: string | null; restingHr?: number | null; hrvSdnn?: number | null; steps?: number | null; activeEnergyKcal?: number | null; exerciseMinutes?: number | null; bodyWeightKg?: number | null; workoutDurationMin?: number | null; avgHr?: number | null; maxHr?: number | null; workoutEnergyKcal?: number | null; syncedAt?: string } };
 
 const templates: Template[] = [
   { id: "shoulder", name: "肩", accent: "青绿", exercises: [
@@ -42,7 +42,7 @@ const nav: { id: View; short: string; label: string }[] = [
   { id:"recovery", short:"复", label:"恢复" }, { id:"progress", short:"势", label:"趋势" },
 ];
 
-const initialRecovery: Recovery = { day:1, sleep:7, restingHr:72, hrv:30, workoutDuration:0, avgHr:0, fatigue:4, soreness:2, stress:4, pain:"无" };
+const initialRecovery: Recovery = { day:1, sleep:7, sleepStart:"", sleepEnd:"", restingHr:72, hrv:30, steps:0, activeEnergy:0, exerciseMinutes:0, bodyWeight:0, workoutDuration:0, avgHr:0, maxHr:0, workoutEnergy:0, fatigue:4, soreness:2, stress:4, pain:"无" };
 
 export default function Home() {
   const [view, setView] = useState<View>("today");
@@ -129,8 +129,10 @@ export default function Home() {
       const metrics = payload.data?.metrics || [];
       const metric = (name: string) => metrics.find((item) => item.name === name)?.data || [];
       const sortByDate = <T extends { date?: string; start?: string; startDate?: string }>(items: T[]) => [...items].sort((a, b) => new Date(b.date || b.start || b.startDate || 0).getTime() - new Date(a.date || a.start || a.startDate || 0).getTime());
-      const latestValue = (name: string) => Number(sortByDate(metric(name))[0]?.qty);
-      const sleepByNight = new Map<string, number>();
+      const metricAliases = (names: string[]) => names.flatMap((name) => metric(name));
+      const latestValue = (names: string[]) => Number(sortByDate(metricAliases(names))[0]?.qty);
+      const totalValue = (names: string[]) => { const values = metricAliases(names).map((sample) => Number(sample.qty)).filter(Number.isFinite); return values.length ? values.reduce((sum, value) => sum + value, 0) : undefined; };
+      const sleepByNight = new Map<string, { hours:number; start:Date; end:Date }>();
       for (const sample of metric("sleep_analysis")) {
         const value = sample.value || "";
         const hours = Number(sample.qty);
@@ -139,17 +141,27 @@ export default function Home() {
         const night = new Date(started);
         if (night.getHours() < 12) night.setDate(night.getDate() - 1);
         const key = `${night.getFullYear()}-${String(night.getMonth() + 1).padStart(2, "0")}-${String(night.getDate()).padStart(2, "0")}`;
-        sleepByNight.set(key, (sleepByNight.get(key) || 0) + hours);
+        const ended = new Date(sample.end || started.getTime() + hours * 3_600_000);
+        const current = sleepByNight.get(key);
+        sleepByNight.set(key, current ? { hours:current.hours + hours, start:current.start < started ? current.start : started, end:current.end > ended ? current.end : ended } : { hours, start:started, end:ended });
       }
       const latestSleep = [...sleepByNight.entries()].sort(([a], [b]) => b.localeCompare(a))[0]?.[1];
       const latestWorkout = [...(payload.data?.workouts || [])].sort((a, b) => new Date(b.end || b.start || 0).getTime() - new Date(a.end || a.start || 0).getTime())[0];
       setRecovery((current) => ({
         ...current,
-        sleep: Number.isFinite(latestSleep) ? Number(latestSleep.toFixed(1)) : current.sleep,
-        restingHr: Number.isFinite(latestValue("resting_heart_rate")) ? Math.round(latestValue("resting_heart_rate")) : current.restingHr,
-        hrv: Number.isFinite(latestValue("heart_rate_variability")) ? Number(latestValue("heart_rate_variability").toFixed(1)) : current.hrv,
+        sleep: latestSleep ? Number(latestSleep.hours.toFixed(1)) : current.sleep,
+        sleepStart: latestSleep?.start.toISOString() || current.sleepStart,
+        sleepEnd: latestSleep?.end.toISOString() || current.sleepEnd,
+        restingHr: Number.isFinite(latestValue(["resting_heart_rate"])) ? Math.round(latestValue(["resting_heart_rate"])) : current.restingHr,
+        hrv: Number.isFinite(latestValue(["heart_rate_variability"])) ? Number(latestValue(["heart_rate_variability"]).toFixed(1)) : current.hrv,
+        steps: totalValue(["step_count", "steps"]) === undefined ? current.steps : Math.round(totalValue(["step_count", "steps"]) as number),
+        activeEnergy: totalValue(["active_energy_burned", "active_energy"]) === undefined ? current.activeEnergy : Math.round(totalValue(["active_energy_burned", "active_energy"]) as number),
+        exerciseMinutes: totalValue(["apple_exercise_time", "exercise_time"]) === undefined ? current.exerciseMinutes : Math.round(totalValue(["apple_exercise_time", "exercise_time"]) as number),
+        bodyWeight: Number.isFinite(latestValue(["body_mass", "body_weight"])) ? Number(latestValue(["body_mass", "body_weight"]).toFixed(1)) : current.bodyWeight,
         workoutDuration: Number.isFinite(latestWorkout?.duration) ? Math.round((latestWorkout?.duration || 0) / 60) : current.workoutDuration,
         avgHr: Number.isFinite(latestWorkout?.avgHeartRate?.qty) ? Math.round(latestWorkout?.avgHeartRate?.qty || 0) : current.avgHr,
+        maxHr: Number.isFinite(latestWorkout?.maxHeartRate?.qty) ? Math.round(latestWorkout?.maxHeartRate?.qty || 0) : current.maxHr,
+        workoutEnergy: Math.round(latestWorkout?.activeEnergyBurned?.qty || latestWorkout?.totalEnergyBurned?.qty || current.workoutEnergy),
       }));
       setLastHealthImport(new Date().toISOString()); setSaved(true); window.setTimeout(() => setSaved(false), 1800);
     } catch {
@@ -175,7 +187,7 @@ export default function Home() {
     }
   }
 
-  async function syncRecovery() {
+  const syncRecovery = useCallback(async () => {
     const endpoint = syncConfig.endpoint.replace(/\/$/, "");
     if (!endpoint || !syncConfig.readToken) { window.alert("请先填入私有同步地址和只读密钥。"); return; }
     setSyncing(true);
@@ -188,10 +200,18 @@ export default function Home() {
       setRecovery((current) => ({
         ...current,
         sleep: Number.isFinite(snapshot.sleepHours) ? Number(snapshot.sleepHours) : current.sleep,
+        sleepStart: snapshot.sleepStart || current.sleepStart,
+        sleepEnd: snapshot.sleepEnd || current.sleepEnd,
         restingHr: Number.isFinite(snapshot.restingHr) ? Math.round(snapshot.restingHr as number) : current.restingHr,
         hrv: Number.isFinite(snapshot.hrvSdnn) ? Number(snapshot.hrvSdnn) : current.hrv,
+        steps: Number.isFinite(snapshot.steps) ? Math.round(snapshot.steps as number) : current.steps,
+        activeEnergy: Number.isFinite(snapshot.activeEnergyKcal) ? Math.round(snapshot.activeEnergyKcal as number) : current.activeEnergy,
+        exerciseMinutes: Number.isFinite(snapshot.exerciseMinutes) ? Math.round(snapshot.exerciseMinutes as number) : current.exerciseMinutes,
+        bodyWeight: Number.isFinite(snapshot.bodyWeightKg) ? Number(snapshot.bodyWeightKg) : current.bodyWeight,
         workoutDuration: Number.isFinite(snapshot.workoutDurationMin) ? Math.round(snapshot.workoutDurationMin as number) : current.workoutDuration,
         avgHr: Number.isFinite(snapshot.avgHr) ? Math.round(snapshot.avgHr as number) : current.avgHr,
+        maxHr: Number.isFinite(snapshot.maxHr) ? Math.round(snapshot.maxHr as number) : current.maxHr,
+        workoutEnergy: Number.isFinite(snapshot.workoutEnergyKcal) ? Math.round(snapshot.workoutEnergyKcal as number) : current.workoutEnergy,
       }));
       setLastHealthImport(snapshot.syncedAt || new Date().toISOString()); setSaved(true); window.setTimeout(() => setSaved(false), 1800);
     } catch {
@@ -199,7 +219,15 @@ export default function Home() {
     } finally {
       setSyncing(false);
     }
-  }
+  }, [syncConfig]);
+
+  /* Syncing is intentionally triggered once after browser-only credentials hydrate. */
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    if (!hydrated || !syncConfig.endpoint || !syncConfig.readToken) return;
+    void syncRecovery();
+  }, [hydrated, syncConfig.endpoint, syncConfig.readToken, syncRecovery]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   return (
     <main className="shell">
@@ -231,19 +259,25 @@ export default function Home() {
           </section>
           <aside className="sideStack">
             <article className={`coachCard ${coach.tone}`}><p className="label">教练判断</p><h3>{coach.title}</h3><p>{coach.text}</p></article>
-            <article className="metricCard"><p className="label">恢复快照</p><div className="metric"><span>睡眠</span><strong>{recovery.sleep || "—"} h</strong></div><div className="metric"><span>静息心率</span><strong>{recovery.restingHr || "—"} bpm</strong></div><div className="metric"><span>HRV</span><strong>{recovery.hrv || "—"} ms</strong></div><div className="metric"><span>训练</span><strong>{recovery.workoutDuration || "—"} min</strong></div><div className="metric"><span>平均心率</span><strong>{recovery.avgHr || "—"} bpm</strong></div><button className="textButton" onClick={()=>setView("recovery")}>更新恢复数据 →</button></article>
+            <article className="metricCard"><p className="label">恢复快照</p><div className="metric"><span>睡眠</span><strong>{recovery.sleep || "—"} h</strong></div><div className="metric"><span>静息心率</span><strong>{recovery.restingHr || "—"} bpm</strong></div><div className="metric"><span>HRV</span><strong>{recovery.hrv || "—"} ms</strong></div><div className="metric"><span>步数</span><strong>{recovery.steps || "—"}</strong></div><div className="metric"><span>训练</span><strong>{recovery.workoutDuration || "—"} min</strong></div><div className="metric"><span>平均 / 最高心率</span><strong>{recovery.avgHr || "—"} / {recovery.maxHr || "—"}</strong></div><button className="textButton" onClick={()=>setView("recovery")}>更新恢复数据 →</button></article>
             <article className="privacyCard"><strong>数据仅保存在这台设备</strong><p>不上传医疗记录、定位轨迹或无关健康数据。可随时导出 JSON 备份。</p></article>
           </aside>
         </div>}
 
         {view === "plans" && <section className="contentPanel"><div className="sectionIntro"><div><p className="label">计划库</p><h2>按你的训记模板原样录入</h2></div><p>容量是历史汇总，不是目标重量；目标次数和 RIR 由实际记录决定。</p></div><div className="templateGrid">{templates.map(template=>{const available=template.exercises.filter(e=>!e.paused).reduce((s,e)=>s+e.sets,0);return <article className="templateCard" key={template.id}><div className="templateTop"><span className={`templateBadge ${template.id}`}>{template.name.slice(0,1)}</span><div><h3>{template.name}</h3><p>{available} 个可执行组 · {template.exercises.filter(e=>!e.paused).length} 个动作</p></div></div><ol>{template.exercises.map(e=><li className={e.paused?"mutedRow":""} key={e.name}><span>{e.name}{e.paused&&"（暂停）"}</span><b>{e.sets}组</b></li>)}</ol><button onClick={()=>{setTemplateId(template.id);setView("today")}}>选择这个模板</button></article>})}</div></section>}
 
-        {view === "recovery" && <section className="contentPanel narrow"><div className="sectionIntro"><div><p className="label">DAY {day}</p><h2>只记录影响训练的恢复字段</h2></div></div><article className="healthBridge"><div><p className="label">APPLE HEALTH BRIDGE</p><h3>{lastHealthImport ? "已收到健康数据" : "等待首次健康数据导入"}</h3><p>{lastHealthImport ? `最近导入：${new Date(lastHealthImport).toLocaleString("zh-CN")}` : "连接私有同步后，睡眠、静息心率、HRV 与最近一次训练会自动写入本机浏览器。"}</p></div><div className="bridgeActions"><button type="button" onClick={syncRecovery} disabled={syncing}>{syncing ? "正在同步..." : "立即同步 Health"}</button><label className="importButton">导入 Health JSON<input type="file" accept="application/json,.json" onChange={importHealthExport}/></label><button type="button" onClick={copyBridgeTemplate}>复制快捷指令网址</button></div></article><details className="syncSetup"><summary>设置私有自动同步</summary><p>仅首次填写。密钥只保存于当前浏览器，不会提交到 GitHub。</p><label>同步地址<input value={syncConfig.endpoint} placeholder="https://你的-worker.workers.dev" onChange={(event)=>setSyncConfig({ ...syncConfig, endpoint:event.target.value })}/></label><label>只读密钥<input type="password" value={syncConfig.readToken} placeholder="由私有同步服务生成" onChange={(event)=>setSyncConfig({ ...syncConfig, readToken:event.target.value })}/></label></details><form className="recoveryForm" onSubmit={(e)=>{e.preventDefault();setSaved(true);setTimeout(()=>setSaved(false),1400)}}>
+        {view === "recovery" && <section className="contentPanel narrow"><div className="sectionIntro"><div><p className="label">DAY {day}</p><h2>恢复、日常负荷与 Watch 训练</h2></div></div><article className="healthBridge"><div><p className="label">APPLE HEALTH BRIDGE</p><h3>{lastHealthImport ? "已收到健康数据" : "等待首次健康数据导入"}</h3><p>{lastHealthImport ? `最近同步：${new Date(lastHealthImport).toLocaleString("zh-CN")}` : "连接私有同步后，恢复、日常活动与 Watch 训练摘要会自动写入本机浏览器。"}</p></div><div className="bridgeActions"><button type="button" onClick={syncRecovery} disabled={syncing}>{syncing ? "正在同步..." : "立即同步 Health"}</button><label className="importButton">导入 Health JSON<input type="file" accept="application/json,.json" onChange={importHealthExport}/></label><button type="button" onClick={copyBridgeTemplate}>复制快捷指令网址</button></div></article><details className="syncSetup"><summary>设置私有自动同步</summary><p>仅首次填写。密钥只保存于当前浏览器，不会提交到 GitHub；设置完成后，每次打开恢复页会自动刷新。</p><label>同步地址<input value={syncConfig.endpoint} placeholder="https://你的-worker.workers.dev" onChange={(event)=>setSyncConfig({ ...syncConfig, endpoint:event.target.value })}/></label><label>只读密钥<input type="password" value={syncConfig.readToken} placeholder="由私有同步服务生成" onChange={(event)=>setSyncConfig({ ...syncConfig, readToken:event.target.value })}/></label></details><form className="recoveryForm" onSubmit={(e)=>{e.preventDefault();setSaved(true);setTimeout(()=>setSaved(false),1400)}}>
           <NumberField label="睡眠" unit="小时" value={recovery.sleep} min={0} max={15} step={0.1} onChange={v=>setRecovery({...recovery,day,sleep:v})}/>
           <NumberField label="静息心率" unit="bpm" value={recovery.restingHr} min={30} max={220} onChange={v=>setRecovery({...recovery,day,restingHr:v})}/>
           <NumberField label="HRV SDNN" unit="ms" value={recovery.hrv} min={0} max={300} onChange={v=>setRecovery({...recovery,day,hrv:v})}/>
           <NumberField label="训练时长" unit="分钟" value={recovery.workoutDuration} min={0} max={600} onChange={v=>setRecovery({...recovery,day,workoutDuration:v})}/>
           <NumberField label="训练平均心率" unit="bpm" value={recovery.avgHr} min={0} max={240} onChange={v=>setRecovery({...recovery,day,avgHr:v})}/>
+          <NumberField label="训练最高心率" unit="bpm" value={recovery.maxHr} min={0} max={240} onChange={v=>setRecovery({...recovery,day,maxHr:v})}/>
+          <NumberField label="步数" unit="步" value={recovery.steps} min={0} max={100000} onChange={v=>setRecovery({...recovery,day,steps:v})}/>
+          <NumberField label="活动能量" unit="kcal" value={recovery.activeEnergy} min={0} max={10000} onChange={v=>setRecovery({...recovery,day,activeEnergy:v})}/>
+          <NumberField label="锻炼分钟数" unit="分钟" value={recovery.exerciseMinutes} min={0} max={1440} onChange={v=>setRecovery({...recovery,day,exerciseMinutes:v})}/>
+          <NumberField label="体重" unit="kg" value={recovery.bodyWeight} min={0} max={300} step={0.1} onChange={v=>setRecovery({...recovery,day,bodyWeight:v})}/>
+          <NumberField label="训练活动能量" unit="kcal" value={recovery.workoutEnergy} min={0} max={5000} onChange={v=>setRecovery({...recovery,day,workoutEnergy:v})}/>
           <NumberField label="疲劳" unit="1–10" value={recovery.fatigue} min={1} max={10} onChange={v=>setRecovery({...recovery,day,fatigue:v})}/>
           <NumberField label="酸痛" unit="0–10" value={recovery.soreness} min={0} max={10} onChange={v=>setRecovery({...recovery,day,soreness:v})}/>
           <NumberField label="压力" unit="1–10" value={recovery.stress} min={1} max={10} onChange={v=>setRecovery({...recovery,day,stress:v})}/>
