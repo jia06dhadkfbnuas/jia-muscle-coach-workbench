@@ -6,10 +6,11 @@ type View = "today" | "plans" | "recovery" | "progress";
 type Exercise = { name: string; muscle: string; sets: number; volume: number; unit?: string; paused?: boolean; note?: string };
 type Template = { id: string; name: string; accent: string; exercises: Exercise[] };
 type LoadMode = "total" | "sides";
-type SetLog = { id: string; day: number; templateId: string; exercise: string; weight: number; loadMode?: LoadMode; leftWeight?: number; rightWeight?: number; reps: number; rir: number; createdAt: string };
+type SetLog = { id: string; day: number; templateId: string; exercise: string; weight: number; loadMode?: LoadMode; leftWeight?: number; rightWeight?: number; reps: number; rir?: number; createdAt: string };
 type Recovery = { day: number; sleep: number; restingHr: number; hrv: number; workoutDuration: number; avgHr: number; fatigue: number; soreness: number; stress: number; pain: string };
 type HealthMetric = { name?: string; data?: Array<{ qty?: number; date?: string; start?: string; startDate?: string; value?: string }> };
 type HealthExport = { data?: { metrics?: HealthMetric[]; workouts?: Array<{ name?: string; start?: string; end?: string; duration?: number; avgHeartRate?: { qty?: number } }> } };
+type TrainingImport = { type: "muscle-coach-training-import"; day: number; templateId: string; logs: Array<Omit<SetLog, "id" | "day" | "templateId">> };
 
 const templates: Template[] = [
   { id: "shoulder", name: "肩", accent: "青绿", exercises: [
@@ -153,6 +154,22 @@ export default function Home() {
     }
   }
 
+  async function importTrainingExport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text()) as TrainingImport;
+      if (payload.type !== "muscle-coach-training-import" || !Number.isInteger(payload.day) || !templates.some((item) => item.id === payload.templateId) || !Array.isArray(payload.logs)) throw new Error("invalid import");
+      const imported = payload.logs.map((item) => ({ ...item, id: crypto.randomUUID(), day: payload.day, templateId: payload.templateId }));
+      if (!imported.length || imported.some((item) => !item.exercise || !Number.isFinite(item.weight) || !Number.isFinite(item.reps) || item.reps < 1)) throw new Error("invalid logs");
+      setLogs((current) => [...current, ...imported]); setDay(payload.day); setTemplateId(payload.templateId); setSaved(true); window.setTimeout(() => setSaved(false), 1800);
+    } catch {
+      window.alert("无法读取训练记录。请选择由增肌教练生成的训练 JSON 文件。");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
   return (
     <main className="shell">
       <aside className="rail">
@@ -203,7 +220,7 @@ export default function Home() {
           <button className="primary wide" type="submit">保存恢复打卡</button>
         </form><div className={`inlineCoach ${coach.tone}`}><strong>{coach.title}</strong><p>{coach.text}</p></div></section>}
 
-        {view === "progress" && <section className="contentPanel"><div className="summaryCards"><article><span>已记录工作组</span><strong>{logs.length}</strong></article><article><span>累计训练容量</span><strong>{totalVolume.toFixed(0)}</strong><small>kg·次</small></article><article><span>当前提交天数</span><strong>{new Set(logs.map(l=>l.day)).size}</strong><small>/ 14</small></article></div><div className="timeline"><div className="sectionIntro"><div><p className="label">14 DAYS</p><h2>训练记录分布</h2></div></div><div className="dayGrid">{Array.from({length:14},(_,i)=>{const count=logs.filter(l=>l.day===i+1).length;return <button key={i+1} className={count?"logged":""} onClick={()=>{setDay(i+1);setView("today")}}><span>D{i+1}</span><strong>{count}</strong><small>组</small></button>})}</div></div><div className="logTable"><div className="sectionIntro"><div><p className="label">最近记录</p><h2>逐组明细</h2></div></div>{logs.length===0?<p className="empty">完成第一组后，这里会自动出现重量、次数和 RIR。</p>:<div className="tableWrap"><table><thead><tr><th>Day</th><th>模板</th><th>动作</th><th>重量</th><th>次数</th><th>RIR</th><th></th></tr></thead><tbody>{[...logs].reverse().slice(0,20).map(log=><tr key={log.id}><td>{log.day}</td><td>{templates.find(t=>t.id===log.templateId)?.name}</td><td>{log.exercise}</td><td>{log.loadMode === "sides" ? `左 ${log.leftWeight} / 右 ${log.rightWeight} kg` : `${log.weight} kg`}</td><td>{log.reps}</td><td>{log.rir}</td><td><button className="delete" onClick={()=>setLogs(current=>current.filter(item=>item.id!==log.id))}>删除</button></td></tr>)}</tbody></table></div>}</div></section>}
+        {view === "progress" && <section className="contentPanel"><div className="sectionIntro"><div><p className="label">历史训练</p><h2>导入已完成的训练</h2></div><label className="importButton">导入训练 JSON<input type="file" accept="application/json,.json" onChange={importTrainingExport}/></label></div><div className="summaryCards"><article><span>已记录工作组</span><strong>{logs.length}</strong></article><article><span>累计训练容量</span><strong>{totalVolume.toFixed(0)}</strong><small>kg·次</small></article><article><span>当前提交天数</span><strong>{new Set(logs.map(l=>l.day)).size}</strong><small>/ 14</small></article></div><div className="timeline"><div className="sectionIntro"><div><p className="label">14 DAYS</p><h2>训练记录分布</h2></div></div><div className="dayGrid">{Array.from({length:14},(_,i)=>{const count=logs.filter(l=>l.day===i+1).length;return <button key={i+1} className={count?"logged":""} onClick={()=>{setDay(i+1);setView("today")}}><span>D{i+1}</span><strong>{count}</strong><small>组</small></button>})}</div></div><div className="logTable"><div className="sectionIntro"><div><p className="label">最近记录</p><h2>逐组明细</h2></div></div>{logs.length===0?<p className="empty">完成第一组后，这里会自动出现重量、次数和 RIR。</p>:<div className="tableWrap"><table><thead><tr><th>Day</th><th>模板</th><th>动作</th><th>重量</th><th>次数</th><th>RIR</th><th></th></tr></thead><tbody>{[...logs].reverse().slice(0,20).map(log=><tr key={log.id}><td>{log.day}</td><td>{templates.find(t=>t.id===log.templateId)?.name}</td><td>{log.exercise}</td><td>{log.loadMode === "sides" ? `左 ${log.leftWeight} / 右 ${log.rightWeight} kg` : `${log.weight} kg`}</td><td>{log.reps}</td><td>{log.rir ?? "—"}</td><td><button className="delete" onClick={()=>setLogs(current=>current.filter(item=>item.id!==log.id))}>删除</button></td></tr>)}</tbody></table></div>}</div></section>}
       </section>
       {saved && <div className="toast" role="status">已保存到本机</div>}
     </main>
