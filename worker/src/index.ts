@@ -44,12 +44,14 @@ function normalize(payload: HealthPayload, timeZone: string): Snapshot {
 }
 
 async function storeWorkouts(db: D1Database, workouts: Workout[], syncedAt: string) {
+  const statements: D1PreparedStatement[] = [];
   for (const workout of workouts) {
     const start = workout.start || ""; const end = workout.end || ""; if (!start && !end) continue;
     const duration = number(workout.duration); const id = encodeURIComponent(`${start}|${end}|${workout.name || "Workout"}|${duration || ""}`);
-    await db.prepare(`INSERT INTO workout_sessions (workout_id, workout_name, start_at, end_at, duration_min, avg_hr, max_hr, energy_kcal, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workout_id) DO UPDATE SET avg_hr=excluded.avg_hr, max_hr=excluded.max_hr, energy_kcal=excluded.energy_kcal, synced_at=excluded.synced_at`)
-      .bind(id, workout.name || "Workout", start || null, end || null, duration === undefined ? null : duration / 60, number(workout.avgHeartRate?.qty) ?? null, number(workout.maxHeartRate?.qty) ?? null, number(workout.activeEnergyBurned?.qty) ?? number(workout.totalEnergyBurned?.qty) ?? null, syncedAt).run();
+    statements.push(db.prepare(`INSERT INTO workout_sessions (workout_id, workout_name, start_at, end_at, duration_min, avg_hr, max_hr, energy_kcal, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workout_id) DO UPDATE SET avg_hr=excluded.avg_hr, max_hr=excluded.max_hr, energy_kcal=excluded.energy_kcal, synced_at=excluded.synced_at`)
+      .bind(id, workout.name || "Workout", start || null, end || null, duration === undefined ? null : duration / 60, number(workout.avgHeartRate?.qty) ?? null, number(workout.maxHeartRate?.qty) ?? null, number(workout.activeEnergyBurned?.qty) ?? number(workout.totalEnergyBurned?.qty) ?? null, syncedAt));
   }
+  if (statements.length) await db.batch(statements);
 }
 
 const worker = {
